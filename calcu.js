@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         SCNU教务系统绩点计算
 // @namespace    http://tampermonkey.net/
-// @version      3.4.2
-// @description  支持功能：跳过5s等待并自动确认，计算小数点后三位绩点和学分，始终保持所有课程展示在同一页，新增快捷查分入口，选择学年学期自动更新数据，无需点击查询
-// @author       Ruofan Liao & Jkey
+// @version      3.5.0
+// @description  支持功能：跳过5s等待并自动确认，计算小数点后三位绩点、百分制成绩和学分，始终保持所有课程展示在同一页，新增快捷查分入口，选择学年学期自动更新数据，无需点击查询
+// @author       Ruofan Liao & Jkey & Dandelion
 // @github       https://github.com/LLLLLrf/GPA-Calculate/tree/main
 // @match        https://jwxt.scnu.edu.cn/xtgl/index_initMenu.html
 // @match        https://jwxt.scnu.edu.cn/xtgl/index_initMenu.html?jsdm=*
@@ -33,11 +33,14 @@
     // if (localAddress.indexOf("initMenu") > -1 && document.getElementByClassName('navbar-nav')){
     if (document.getElementsByClassName('navbar-nav')){
         var searchButton = document.createElement("span");
-        searchButton.style.backgroundColor="#0483d4";
+        // 设置成绩查询按钮样式
+        searchButton.style.backgroundColor="#ffb300ff";
         searchButton.style.padding='14px';
         searchButton.style.color='white';
         searchButton.style.fontWeight='bold';
-        searchButton.style.borderRadius='10px';
+        searchButton.style.borderRadius='6px';
+        searchButton.style.cursor='pointer';
+
         searchButton.onclick = function() {
             clickMenu('N305005', '/cjcx/cjcx_cxDgXscj.html', '学生成绩查询', 'null');
             return false;
@@ -80,29 +83,44 @@
         newTextNode2.style.marginLeft='10px';
         $("#yhgnPage").append(newTextNode);
         $("#yhgnPage").append(newTextNode2);
-        var pgs=document.getElementsByClassName('ui-pg-selbox')[0];
-        pgs[0].selected=false;
-        document.getElementsByClassName('ui-pg-selbox')[0].value="1000";
-        var event = new Event('change');
-        pgs.dispatchEvent(event);
-        // 监听函数
+        // 添加百分制成绩显示
+        var newTextNode3 = document.createElement("span");
+        newTextNode3.innerText = "百分制成绩：加载中";
+        newTextNode3.id = "avgScore";
+        newTextNode3.style.marginLeft = '10px';
+        $("#yhgnPage").append(newTextNode3);
+        // 设置每页最多显示1000条并触发刷新
+        var pgs = $('.ui-pg-selbox');
+        if (pgs.length) {
+            pgs.val('1000').trigger('change');
+        }
+        // 监听加载状态，当从加载中切换为加载完成时触发计算
         const observeChange = function() {
-            let observer = new MutationObserver(function () {
-                // console.log("发生了改变");
-                if (document.getElementById("load_tabGrid").style.display === "none") {
-                    setGPA();
-                    observer.disconnect();
-                }
+            const loadDiv = document.getElementById("load_tabGrid");
+            if (!loadDiv) return;
+            let prev = loadDiv.style.display;
+            const observer = new MutationObserver(mutations => {
+                mutations.forEach(mutation => {
+                    if (mutation.attributeName === 'style') {
+                        const curr = loadDiv.style.display;
+                        if (prev === 'block' && curr === 'none') {
+                            setGPA();
+                        }
+                        prev = curr;
+                    }
+                });
             });
-            observer.observe(document.getElementById("load_tabGrid"), { attributes: true, attributeFilter: ['style'] });
+            observer.observe(loadDiv, { attributes: true, attributeFilter: ['style'] });
         }
 
         // 首次进入
         observeChange();
 
         document.getElementById("search_go").onclick = function () {
-            // console.log("点击");
+            // 点击查询时，显示加载中状态
             newTextNode.innerText = '平均绩点：加载中';
+            newTextNode2.innerText = '总学分：加载中';
+            newTextNode3.innerText = '百分制成绩：加载中';
             observeChange();
         }
 
@@ -120,9 +138,12 @@
         if (page <= 0) {
             $("span#avgGPA").text('平均绩点：暂无成绩');
             $("span#sumCredit").text('总学分：暂无');
+            $("span#avgScore").text('百分制成绩：暂无');
             return;
         } else if (page === 1) {
             var sumCredit = 0, GPA = 0;
+            // 加权成绩总和
+            var weightedScoreSum = 0;
             var credits_grades = $("td[aria-describedby='tabGrid_xfjd']");
             var credits = $("td[aria-describedby='tabGrid_xf']");
             var courseList=new Array();
@@ -135,14 +156,22 @@
                     }else{
                         sumCredit += Number(credits[i].innerText);
                         GPA += Number(credits_grades[i].innerText);
-                        courseList[i]=course[i].innerText;
+                        courseList[i] = course[i].innerText;
+                        // 按学分加权成绩
+                        var scoreText = cj[i].innerText.trim();
+                        if (/^\d+(\.\d+)?$/.test(scoreText)) {
+                            var score = parseFloat(scoreText);
+                            weightedScoreSum += score * Number(credits[i].innerText);
+                        }
                     }
                 }
             }
             GPA /= sumCredit;
-            console.log(courseList);
+            // 加权百分制成绩
+            var avgScore = sumCredit > 0 ? weightedScoreSum / sumCredit : 0;
             $("span#avgGPA").text('平均绩点：' + GPA.toFixed(3));
             $("span#sumCredit").text('总学分：' + sumCredit.toFixed(2));
+            $("span#avgScore").text('百分制成绩：' + avgScore.toFixed(2));
             return;
         }
         var gnmkdm = $('input#gnmkdmKey').val();
@@ -152,13 +181,40 @@
         var xqm_val = xqm[xqm.selectedIndex].value;
         var xnm = document.getElementById("xnm");
         var xnm_val = xnm[xnm.selectedIndex].value;
-        // 发送请求
-        fetch('https://jwxt.scnu.edu.cn' + ($("#jsxx").val() == "xs"?'/cjcx/cjcx_cxXsgrcj.html':'/cjcx/cjcx_cxDgXscj.html') + '?doType=query&gnmkdm=' + gnmkdm + '&su=' + user, {
-            "headers": {
-                "content-type": "application/x-www-form-urlencoded;charset=UTF-8"
-            },
-            "body": "xnm=" + xnm_val + "&xqm=" + xqm_val + "&_search=false&nd=" + nd + "&queryModel.showCount=100&queryModel.currentPage=1&queryModel.sortName=&queryModel.sortOrder=asc",
-            "method": "POST"
-        }).then(response => response.json()).then(data => {});
+        // 发送请求并获取所有数据，计算绩点和总学分
+        fetch('https://jwxt.scnu.edu.cn' + ($("#jsxx").val() === "xs" ? '/cjcx/cjcx_cxXsgrcj.html' : '/cjcx/cjcx_cxDgXscj.html') + '?doType=query&gnmkdm=' + gnmkdm + '&su=' + user, {
+            headers: { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+            body: 'xnm=' + xnm_val + '&xqm=' + xqm_val + '&_search=false&nd=' + nd + '&queryModel.showCount=1000&queryModel.currentPage=1&queryModel.sortName=&queryModel.sortOrder=asc',
+            method: 'POST'
+        })
+        .then(response => response.json())
+        .then(data => {
+            var sumCredit = 0, totalGPA = 0;
+            var sumScore = 0, countScore = 0;
+            if (data && data.rows) {
+                data.rows.forEach(function(row) {
+                    var xf = parseFloat(row.xf);
+                    var xfjd = parseFloat(row.xfjd);
+                    var cj = row.cj;
+                    if (!isNaN(xf) && xf > 0 && !isNaN(xfjd) && xfjd > 0) {
+                        if (cj === '缓考' || cj === '通过' || cj === '免修') return;
+                        sumCredit += xf;
+                        totalGPA += xfjd;
+                        // 累计成绩 
+                        var scoreText = String(row.cj).trim();
+                        if (/^\d+(\.\d+)?$/.test(scoreText)) {
+                            var score = parseFloat(scoreText);
+                            sumScore += score;
+                            countScore++;
+                        }
+                    }
+                });
+            }
+            var avg = sumCredit > 0 ? totalGPA / sumCredit : 0;
+            var avgScore = countScore > 0 ? sumScore / countScore : 0;
+            $("span#avgGPA").text('平均绩点：' + avg.toFixed(3));
+            $("span#sumCredit").text('总学分：' + sumCredit.toFixed(2));
+            $("span#avgScore").text('百分制成绩：' + avgScore.toFixed(2));
+        });
     }
 })();
